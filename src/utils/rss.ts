@@ -7,55 +7,133 @@ const RSS_FEED_URL = 'https://media.zencast.fm/episode-1-1052053/rss';
 export async function fetchRSSFeed(url: string = RSS_FEED_URL): Promise<{ podcast: PodcastInfo; episodes: Episode[] }> {
   try {
     const response = await fetch(`${CORS_PROXY}${encodeURIComponent(url)}`);
+    
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+    
     const xmlText = await response.text();
+    
+    if (!xmlText || xmlText.trim() === '') {
+      throw new Error('Empty RSS feed response');
+    }
     
     const parser = new DOMParser();
     const xmlDoc = parser.parseFromString(xmlText, 'text/xml');
     
-    // Extract podcast information
-    const channel = xmlDoc.querySelector('channel');
-    if (!channel) {
-      throw new Error('Invalid RSS feed format');
+    // Check for XML parsing errors
+    const parserError = xmlDoc.querySelector('parsererror');
+    if (parserError) {
+      throw new Error('Invalid XML format');
     }
     
-    const podcast: PodcastInfo = {
-      title: channel.querySelector('title')?.textContent || 'Shut Up Dude',
-      description: channel.querySelector('description')?.textContent || 'A hilarious podcast where friends debate everything.',
-      imageUrl: channel.querySelector('image url')?.textContent || 
-                channel.querySelector('itunes\\:image')?.getAttribute('href') ||
-                'https://images.pexels.com/photos/4792509/pexels-photo-4792509.jpeg?auto=compress&cs=tinysrgb&w=800',
-      author: channel.querySelector('itunes\\:author')?.textContent || 
-              channel.querySelector('managingEditor')?.textContent || 'The Dudes',
-      category: channel.querySelector('itunes\\:category')?.getAttribute('text') || 'Comedy',
-      language: channel.querySelector('language')?.textContent || 'en-US',
-      link: channel.querySelector('link')?.textContent || 'https://shutupdude.podcast.com'
+    // Try to find channel element with different selectors
+    let channel = xmlDoc.querySelector('channel');
+    if (!channel) {
+      channel = xmlDoc.querySelector('rss channel');
+    }
+    if (!channel) {
+      channel = xmlDoc.querySelector('feed'); // Atom feed support
+    }
+    if (!channel) {
+      // If it's a single episode feed, treat the root as the channel
+      channel = xmlDoc.documentElement;
+    }
+    
+    if (!channel) {
+      console.warn('No channel element found, using fallback data');
+      throw new Error('Invalid RSS feed format - no channel found');
+    }
+    
+    // Extract podcast information with fallbacks
+    const getTextContent = (selector: string, fallback: string = '') => {
+      const element = channel!.querySelector(selector);
+      return element?.textContent?.trim() || fallback;
     };
     
-    // Extract episodes
-    const items = xmlDoc.querySelectorAll('item');
-    const episodes: Episode[] = Array.from(items).map((item, index) => {
-      const enclosure = item.querySelector('enclosure');
-      const itunesImage = item.querySelector('itunes\\:image');
-      const guid = item.querySelector('guid')?.textContent || `episode-${index + 1}`;
-      
-      return {
-        id: guid.replace(/[^a-zA-Z0-9-]/g, '-').toLowerCase(),
-        title: item.querySelector('title')?.textContent || `Episode ${index + 1}`,
-        description: item.querySelector('description')?.textContent || 
-                    item.querySelector('itunes\\:summary')?.textContent || 
-                    'No description available',
-        pubDate: item.querySelector('pubDate')?.textContent || new Date().toISOString(),
-        duration: item.querySelector('itunes\\:duration')?.textContent || '00:00',
-        audioUrl: enclosure?.getAttribute('url') || '',
-        imageUrl: itunesImage?.getAttribute('href') || podcast.imageUrl,
-        episodeNumber: parseInt(item.querySelector('itunes\\:episode')?.textContent || `${index + 1}`),
-        season: parseInt(item.querySelector('itunes\\:season')?.textContent || '1')
-      };
+    const getAttribute = (selector: string, attr: string, fallback: string = '') => {
+      const element = channel!.querySelector(selector);
+      return element?.getAttribute(attr) || fallback;
+    };
+    
+    const podcast: PodcastInfo = {
+      title: getTextContent('title') || 'Shut Up Dude',
+      description: getTextContent('description') || 
+                  getTextContent('itunes\\:summary') || 
+                  getTextContent('summary') ||
+                  'A hilarious podcast where friends debate everything.',
+      imageUrl: getAttribute('image url', 'href') || 
+                getAttribute('itunes\\:image', 'href') ||
+                getAttribute('image', 'href') ||
+                'https://images.pexels.com/photos/4792509/pexels-photo-4792509.jpeg?auto=compress&cs=tinysrgb&w=800',
+      author: getTextContent('itunes\\:author') || 
+              getTextContent('managingEditor') || 
+              getTextContent('author') ||
+              'The Dudes',
+      category: getAttribute('itunes\\:category', 'text') || 
+                getTextContent('category') ||
+                'Comedy',
+      language: getTextContent('language') || 'en-US',
+      link: getTextContent('link') || 'https://shutupdude.podcast.com'
+    };
+    
+    // Extract episodes with better error handling
+    const items = channel.querySelectorAll('item, entry'); // Support both RSS and Atom
+    const episodes: Episode[] = [];
+    
+    if (items.length === 0) {
+      console.warn('No episodes found in feed, using mock data');
+    }
+    
+    Array.from(items).forEach((item, index) => {
+      try {
+        const enclosure = item.querySelector('enclosure');
+        const itunesImage = item.querySelector('itunes\\:image');
+        const guid = getTextContent.call({ querySelector: (s: string) => item.querySelector(s) }, 'guid') || 
+                    getTextContent.call({ querySelector: (s: string) => item.querySelector(s) }, 'id') || 
+                    `episode-${index + 1}`;
+        
+        const episode: Episode = {
+          id: guid.replace(/[^a-zA-Z0-9-]/g, '-').toLowerCase(),
+          title: getTextContent.call({ querySelector: (s: string) => item.querySelector(s) }, 'title') || 
+                `Episode ${index + 1}`,
+          description: getTextContent.call({ querySelector: (s: string) => item.querySelector(s) }, 'description') || 
+                      getTextContent.call({ querySelector: (s: string) => item.querySelector(s) }, 'itunes\\:summary') || 
+                      getTextContent.call({ querySelector: (s: string) => item.querySelector(s) }, 'summary') ||
+                      'No description available',
+          pubDate: getTextContent.call({ querySelector: (s: string) => item.querySelector(s) }, 'pubDate') || 
+                  getTextContent.call({ querySelector: (s: string) => item.querySelector(s) }, 'published') ||
+                  new Date().toISOString(),
+          duration: getTextContent.call({ querySelector: (s: string) => item.querySelector(s) }, 'itunes\\:duration') || '00:00',
+          audioUrl: enclosure?.getAttribute('url') || 
+                   getAttribute.call({ querySelector: (s: string) => item.querySelector(s) }, 'link[type*="audio"]', 'href') ||
+                   '',
+          imageUrl: getAttribute.call({ querySelector: (s: string) => item.querySelector(s) }, 'itunes\\:image', 'href') || 
+                   podcast.imageUrl,
+          episodeNumber: parseInt(getTextContent.call({ querySelector: (s: string) => item.querySelector(s) }, 'itunes\\:episode') || `${index + 1}`),
+          season: parseInt(getTextContent.call({ querySelector: (s: string) => item.querySelector(s) }, 'itunes\\:season') || '1')
+        };
+        
+        episodes.push(episode);
+      } catch (episodeError) {
+        console.warn(`Failed to parse episode ${index + 1}:`, episodeError);
+        // Continue with other episodes
+      }
     });
     
-    return { podcast, episodes };
+    // If we got podcast info but no episodes, still return the podcast info
+    return { 
+      podcast, 
+      episodes: episodes.length > 0 ? episodes : mockEpisodes 
+    };
+    
   } catch (error) {
     console.error('Failed to fetch RSS feed:', error);
+    
+    // Provide more specific error information
+    if (error instanceof TypeError && error.message.includes('fetch')) {
+      console.error('Network error - check CORS proxy and feed URL');
+    }
     
     // Fallback to mock data if RSS fetch fails
     return {
@@ -66,34 +144,45 @@ export async function fetchRSSFeed(url: string = RSS_FEED_URL): Promise<{ podcas
 }
 
 export function formatDate(dateString: string): string {
-  const date = new Date(dateString);
-  return date.toLocaleDateString('en-US', {
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric'
-  });
+  try {
+    const date = new Date(dateString);
+    if (isNaN(date.getTime())) {
+      return 'Unknown Date';
+    }
+    return date.toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric'
+    });
+  } catch (error) {
+    return 'Unknown Date';
+  }
 }
 
 export function formatDuration(duration: string): string {
   // Handle different duration formats (seconds, MM:SS, HH:MM:SS)
   if (!duration || duration === '00:00') return 'Unknown';
   
-  // If it's just a number (seconds)
-  if (/^\d+$/.test(duration)) {
-    const totalSeconds = parseInt(duration);
-    const hours = Math.floor(totalSeconds / 3600);
-    const minutes = Math.floor((totalSeconds % 3600) / 60);
-    const seconds = totalSeconds % 60;
-    
-    if (hours > 0) {
-      return `${hours}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
-    } else {
-      return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+  try {
+    // If it's just a number (seconds)
+    if (/^\d+$/.test(duration)) {
+      const totalSeconds = parseInt(duration);
+      const hours = Math.floor(totalSeconds / 3600);
+      const minutes = Math.floor((totalSeconds % 3600) / 60);
+      const seconds = totalSeconds % 60;
+      
+      if (hours > 0) {
+        return `${hours}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+      } else {
+        return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+      }
     }
+    
+    // If it's already in MM:SS or HH:MM:SS format
+    return duration;
+  } catch (error) {
+    return 'Unknown';
   }
-  
-  // If it's already in MM:SS or HH:MM:SS format
-  return duration;
 }
 
 // Mock data as fallback
