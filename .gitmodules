@@ -1,0 +1,3 @@
+[submodule "site/themes/mostafa-hugo-theme"]
+	path = site/themes/mostafa-hugo-theme
+	url = https://github.com/mirmousaviii/mostafa-hugo-theme.git
