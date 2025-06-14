@@ -1,0 +1,6 @@
+baseURL = "https://Shutupdude.uk"
+title = "Shut Up Dude"
+theme = "hyg robot"
+
+[params]
+year = 2023
