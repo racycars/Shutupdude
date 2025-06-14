@@ -1,6 +1,6 @@
 baseURL = "https://Shutupdude.uk"
 title = "Shut Up Dude"
-theme = "hyg robot"
+theme = "mostafa-hugo-theme"
 
 [params]
 year = 2023
